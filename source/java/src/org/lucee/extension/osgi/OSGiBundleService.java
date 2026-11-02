@@ -344,27 +344,6 @@ public final class OSGiBundleService implements BundleService {
 	}
 
 	@Override
-	public List<String> uninstallOtherVersions(String bundleName, String keepVersion) {
-		List<String> versions = new ArrayList<>();
-		BundleContext ctx = runningContext();
-		if (ctx == null) return versions;
-		List<Bundle> stale = new ArrayList<>();
-		for (Bundle b: ctx.getBundles()) {
-			String v = toLucee(b.getVersion());
-			if (bundleName.equals(b.getSymbolicName()) && !v.equalsIgnoreCase(keepVersion)) {
-				try {
-					b.uninstall();
-					stale.add(b);
-					versions.add(v);
-				}
-				catch (BundleException ignored) {}
-			}
-		}
-		if (!stale.isEmpty()) ctx.getBundle(0).adapt(FrameworkWiring.class).refreshBundles(stale);
-		return versions;
-	}
-
-	@Override
 	public Map<String, Object> loadBundle(String bundleName, String bundleVersion) throws IOException {
 		return toInfo(require(bundleName, bundleVersion));
 	}
