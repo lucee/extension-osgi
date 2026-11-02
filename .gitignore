@@ -1,0 +1,16 @@
+/target
+/maven-deploy.sh
+**/Test.java
+**/.DS_Store
+**/.svn/
+/*.project
+va specific
+*.class
+target
+target/*
+*.lock
+*.DS_Store
+temp
+/test-output
+/.claude
+.vscode/settings.json
