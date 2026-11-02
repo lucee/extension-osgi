@@ -171,6 +171,7 @@
         <filtering>false</filtering>
         <includes>
           <include>resources/**</include>
+          <include>META-INF/**</include>
         </includes>
       </resource>
     </resources>
