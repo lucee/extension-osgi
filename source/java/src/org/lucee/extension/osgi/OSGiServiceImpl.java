@@ -11,10 +11,14 @@ import java.util.Arrays;
 import java.util.Dictionary;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.ServiceLoader;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
@@ -185,38 +189,164 @@ public final class OSGiServiceImpl implements OSGiService {
 		return best;
 	}
 
-	/** the installed bundle, installing it from the local bundle directory or one of the given directories when necessary */
-	private Bundle load(String name, String version, File[] dirs) throws IOException {
+	/**
+	 * the installed bundle, installing it from the local bundle directory, one of the given directories or a
+	 * download when necessary
+	 *
+	 * @param versionOnlyMatters when true any version already available is good enough, the version only
+	 *            matters when the bundle has to be downloaded
+	 */
+	private Bundle load(String name, String version, File[] dirs, boolean versionOnlyMatters) throws IOException {
 		BundleContext ctx = context();
 		Bundle b = find(ctx, name, version);
-		if (b == null) {
-			File jar = findJar(bundleDirectory, name, version);
-			if (jar == null && dirs != null) {
-				for (File dir: dirs) {
-					jar = findJar(dir, name, version);
-					if (jar != null) break;
-				}
-			}
-			if (jar == null) throw new IOException("the bundle [" + name + ":" + version + "] is not available");
-			try {
-				b = ctx.installBundle(jar.toURI().toString());
-			}
-			catch (BundleException e) {
-				throw new IOException(e.getMessage(), e);
+		if (b == null && versionOnlyMatters) b = find(ctx, name, null);
+		if (b != null) return b;
+
+		File jar = findJar(bundleDirectory, name, version);
+		if (jar == null && dirs != null) {
+			for (File dir: dirs) {
+				jar = findJar(dir, name, version);
+				if (jar != null) break;
 			}
 		}
-		return b;
-	}
-
-	private Bundle loadAndStart(String name, String version, File[] dirs) throws IOException {
-		Bundle b = load(name, version, dirs);
+		if (jar == null && versionOnlyMatters) jar = findJar(bundleDirectory, name, null);
+		if (jar == null) jar = download(name, version);
 		try {
-			startIfNecessary(b);
+			return ctx.installBundle(jar.toURI().toString());
 		}
 		catch (BundleException e) {
 			throw new IOException(e.getMessage(), e);
 		}
-		return b;
+	}
+
+	/** download a bundle into the bundle directory */
+	private File download(String name, String version) throws IOException {
+		BundleProvider provider = BundleProvider.getInstance();
+		if (version == null || version.trim().isEmpty()) version = provider.latestVersion(name);
+		if (version == null) throw new IOException("the bundle [" + name + "] is not available and there is no version to download");
+		URL url;
+		try {
+			url = provider.getBundleAsURL(name, version);
+		}
+		catch (BundleException | RuntimeException e) {
+			throw new IOException("no download for the bundle [" + name + ":" + version + "]: " + e.getMessage(), e);
+		}
+		File tmp = new File(bundleDirectory, name + "-" + version + ".jar.tmp");
+		try (InputStream is = url.openStream(); OutputStream os = new FileOutputStream(tmp)) {
+			byte[] buf = new byte[8192];
+			int len;
+			while ((len = is.read(buf)) != -1) {
+				os.write(buf, 0, len);
+			}
+		}
+		Object[] nv = read(tmp);
+		if (nv == null) {
+			tmp.delete();
+			throw new IOException("the file downloaded from [" + url + "] is not an OSGi bundle");
+		}
+		File target = new File(bundleDirectory, nv[0] + "-" + toLucee((org.osgi.framework.Version) nv[1]) + ".jar");
+		if (target.isFile()) tmp.delete();
+		else if (!tmp.renameTo(target)) throw new IOException("failed to move the downloaded bundle to [" + target + "]");
+		return target;
+	}
+
+	private Bundle loadAndStart(String name, String version, File[] dirs, boolean versionOnlyMatters) throws IOException {
+		Bundle b = load(name, version, dirs, versionOnlyMatters);
+		Set<String> tried = new HashSet<>();
+		while (true) {
+			try {
+				startIfNecessary(b);
+				return b;
+			}
+			catch (BundleException be) {
+				// a bundle this bundle depends on may be missing, load it and try again
+				if (!loadMissing(be.getMessage(), dirs, tried)) throw new IOException(be.getMessage(), be);
+			}
+		}
+	}
+
+	private static final Pattern MISSING_BUNDLE = Pattern.compile("osgi\\.wiring\\.bundle=([^)]+)\\)(?:\\(bundle-version>=([^)]+)\\))?");
+	private static final Pattern MISSING_PACKAGE = Pattern.compile("osgi\\.wiring\\.package=([^)]+)\\)");
+
+	// packages of bundles that are no longer part of Lucee, extensions that still import them get the bundle
+	private static final Map<String, String> PACKAGE_BUNDLE = new HashMap<>();
+	static {
+		String[] bcprov = { "asn1", "crypto", "i18n", "jce", "math", "mozilla", "ocsp", "openssl", "voms", "x509" };
+		for (String p: bcprov) {
+			PACKAGE_BUNDLE.put("org.bouncycastle." + p, "bouncycastle.prov");
+		}
+		PACKAGE_BUNDLE.put("org.bouncycastle.tsp", "bouncycastle.tsp");
+		PACKAGE_BUNDLE.put("org.bouncycastle.cms", "bouncycastle.mail");
+		PACKAGE_BUNDLE.put("org.bouncycastle.mail", "bouncycastle.mail");
+		PACKAGE_BUNDLE.put("org.bouncycastle.sasn1", "bouncycastle.mail");
+		PACKAGE_BUNDLE.put("org.bouncycastle", "bcprov");
+		PACKAGE_BUNDLE.put("com.fasterxml.jackson.annotation", "com.fasterxml.jackson.core.jackson-annotations");
+		PACKAGE_BUNDLE.put("org.apache.lucene.analysis", "apache.lucene");
+		PACKAGE_BUNDLE.put("com.sun.jna", "com.sun.jna");
+		PACKAGE_BUNDLE.put("org.apache.commons.lang", "org.apache.commons.lang");
+		PACKAGE_BUNDLE.put("jcifs.smb", "org.lucee.jcifs");
+		PACKAGE_BUNDLE.put("org.apache.commons.logging", "org.lucee.commons.logging");
+		PACKAGE_BUNDLE.put("javax.activation", "com.sun.activation.javax.activation");
+	}
+
+	/** loads the bundles and packages the message of a failed start says are missing, false when nothing could be loaded */
+	private boolean loadMissing(String message, File[] dirs, Set<String> tried) {
+		boolean loaded = false;
+		Matcher m = MISSING_BUNDLE.matcher(message);
+		while (m.find()) {
+			String name = m.group(1).trim();
+			String version = m.group(2) == null ? null : m.group(2).trim();
+			if (!tried.add("b:" + name + ":" + version)) continue;
+			try {
+				load(name, version, dirs, true);
+				loaded = true;
+			}
+			catch (IOException e) {
+			}
+		}
+		m = MISSING_PACKAGE.matcher(message);
+		while (m.find()) {
+			String pkg = m.group(1).trim();
+			if (!tried.add("p:" + pkg)) continue;
+			try {
+				File jar = findExporting(bundleDirectory, pkg);
+				if (jar != null) {
+					context().installBundle(jar.toURI().toString());
+					loaded = true;
+					continue;
+				}
+				String name = PACKAGE_BUNDLE.get(pkg);
+				if (name != null) {
+					load(name, null, dirs, true);
+					loaded = true;
+				}
+			}
+			catch (IOException | BundleException e) {
+			}
+		}
+		return loaded;
+	}
+
+	/** a bundle in the directory that exports the package */
+	private static File findExporting(File dir, String pkg) {
+		File[] jars = dir == null ? null : dir.listFiles((d, n) -> n.endsWith(".jar"));
+		if (jars == null) return null;
+		for (File jar: jars) {
+			try (JarFile jf = new JarFile(jar)) {
+				Manifest mf = jf.getManifest();
+				String exports = mf == null ? null : mf.getMainAttributes().getValue("Export-Package");
+				if (exports == null) continue;
+				for (String part: exports.split(",(?=[^\"]*(?:\"[^\"]*\"[^\"]*)*$)")) {
+					String name = part.trim();
+					int idx = name.indexOf(';');
+					if (idx != -1) name = name.substring(0, idx);
+					if (pkg.equals(name.trim())) return jar;
+				}
+			}
+			catch (IOException e) {
+			}
+		}
+		return null;
 	}
 
 	// OSGiService
@@ -229,7 +359,7 @@ public final class OSGiServiceImpl implements OSGiService {
 	@Override
 	public Class<?> loadClass(String name, String version, String className, File[] additionalBundleDirectories, boolean versionOnlyMattersForDownload)
 			throws IOException, ClassNotFoundException {
-		return loadAndStart(name, version, additionalBundleDirectories).loadClass(className);
+		return loadAndStart(name, version, additionalBundleDirectories, versionOnlyMattersForDownload).loadClass(className);
 	}
 
 	@Override
@@ -257,7 +387,7 @@ public final class OSGiServiceImpl implements OSGiService {
 	@Override
 	public URL getResource(String name, String version, String path) {
 		try {
-			return loadAndStart(name, version, null).getResource(path);
+			return loadAndStart(name, version, null, false).getResource(path);
 		}
 		catch (IOException e) {
 			return null;
@@ -277,7 +407,7 @@ public final class OSGiServiceImpl implements OSGiService {
 
 	@Override
 	public ClassLoader getClassLoader(String name, String version, File[] additionalBundleDirectories) throws IOException {
-		Bundle b = loadAndStart(name, version, additionalBundleDirectories);
+		Bundle b = loadAndStart(name, version, additionalBundleDirectories, false);
 		BundleWiring wiring = b.adapt(BundleWiring.class);
 		if (wiring == null) {
 			framework().adapt(FrameworkWiring.class).resolveBundles(Arrays.asList(b));
