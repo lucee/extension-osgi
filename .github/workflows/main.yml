@@ -177,7 +177,7 @@ jobs:
       fail-fast: false
       matrix:
         # repository variables are not available to pull requests from forks, fall back to a fixed 9.0 build
-        lucee: ${{ fromJSON(vars.LUCEE_TEST_VERSIONS_9 || '[{"version":"9.0.0.1487-ALPHA","query":"9.0/all/light","branch":"9.0"}]') }}
+        lucee: ${{ fromJSON(vars.LUCEE_TEST_VERSIONS_9 || '[{"version":"9.0.0.1510-ALPHA","query":"9.0/all/light","branch":"9.0"}]') }}
     steps:
       - uses: actions/checkout@v6
 

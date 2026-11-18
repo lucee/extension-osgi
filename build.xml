@@ -74,7 +74,9 @@
             <arg value="-DoutputDirectory=${temp}/dependency"/>
             <arg value="-Dmdep.copyPom=true"/>
             <arg value="-Dmdep.useRepositoryLayout=true"/>
-            <arg value="-DexcludeScope=provided"/>
+            <!-- runtime = compile+runtime, not provided and not test. excludeScope can only be set once,
+                 so includeScope is used: otherwise test-scoped junit-jupiter is packed into the .lex. -->
+            <arg value="-DincludeScope=runtime"/>
             <arg value="-Drevision=${bundleversion}"/>
             <arg value="dependency:copy-dependencies"/>
         </exec>
