@@ -363,6 +363,66 @@ public final class OSGiServiceImpl implements OSGiService {
 		}
 	}
 
+	private static final ThreadLocal<Set<String>> REQUIRING = ThreadLocal.withInitial(HashSet::new);
+
+	/** the bundles a jar needs through Require-Bundle (not optional): name and range, the range is null when there is no bundle-version */
+	static List<Object[]> requiredBundles(File jar) {
+		List<Object[]> result = new ArrayList<>();
+		try (JarFile jf = new JarFile(jar)) {
+			Manifest mf = jf.getManifest();
+			String header = mf == null ? null : mf.getMainAttributes().getValue("Require-Bundle");
+			if (header == null) return result;
+			for (String entry: header.split(",(?=[^\"]*(?:\"[^\"]*\"[^\"]*)*$)")) {
+				String[] parts = entry.split(";(?=[^\"]*(?:\"[^\"]*\"[^\"]*)*$)");
+				String name = parts[0].trim();
+				if (name.isEmpty()) continue;
+				VersionRange range = null;
+				boolean optional = false;
+				for (int i = 1; i < parts.length; i++) {
+					String a = parts[i].trim();
+					if (a.startsWith("resolution:=")) optional = "optional".equals(removeQuotes(a.substring(12)));
+					else if (a.startsWith("bundle-version=")) {
+						try {
+							range = VersionRange.valueOf(removeQuotes(a.substring(15)));
+						}
+						catch (IllegalArgumentException iae) {
+						}
+					}
+				}
+				// the system bundle is the framework itself
+				if (!optional && !"system.bundle".equals(name)) result.add(new Object[] { name, range });
+			}
+		}
+		catch (IOException e) {
+		}
+		return result;
+	}
+
+	/**
+	 * a bundle with Require-Bundle is not resolved without the bundles it requires, and the
+	 * resolver reports the first missing requirement only (often a package that the required bundle exports),
+	 * so the required bundles are loaded before the bundle is installed. What cannot be loaded here is
+	 * reported by the resolver when the bundle is started.
+	 */
+	private void loadRequiredBundles(File jar, File[] dirs) {
+		Set<String> active = REQUIRING.get();
+		if (!active.add(jar.getAbsolutePath())) return;
+		try {
+			for (Object[] required: requiredBundles(jar)) {
+				try {
+					if (required[1] == null) load((String) required[0], (String) null, dirs, true);
+					else load((String) required[0], (VersionRange) required[1], dirs);
+				}
+				catch (IOException | RuntimeException e) {
+				}
+			}
+		}
+		finally {
+			active.remove(jar.getAbsolutePath());
+			if (active.isEmpty()) REQUIRING.remove();
+		}
+	}
+
 	/**
 	 * the installed bundle, installing it from the local bundle directory, one of the given directories or a
 	 * download when necessary
@@ -385,6 +445,7 @@ public final class OSGiServiceImpl implements OSGiService {
 		}
 		if (jar == null && versionOnlyMatters) jar = findJar(bundleDirectory, name, (String) null);
 		if (jar == null) jar = download(name, version);
+		loadRequiredBundles(jar, dirs);
 		return install(ctx, jar);
 	}
 
@@ -414,6 +475,7 @@ public final class OSGiServiceImpl implements OSGiService {
 			if (version == null) version = unmappedVersion(range);
 			jar = download(name, version);
 		}
+		loadRequiredBundles(jar, dirs);
 		return install(ctx, jar);
 	}
 
@@ -426,7 +488,7 @@ public final class OSGiServiceImpl implements OSGiService {
 		try {
 			url = provider.getBundleAsURL(name, version);
 		}
-		catch (BundleException | RuntimeException e) {
+		catch (IOException | BundleException | RuntimeException e) {
 			throw new IOException("no download for the bundle [" + name + ":" + version + "]: " + e.getMessage(), e);
 		}
 		// a unique file, the same bundle may be downloaded by two threads at the same time
