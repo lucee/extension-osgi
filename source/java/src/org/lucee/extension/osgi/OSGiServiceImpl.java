@@ -295,8 +295,17 @@ public final class OSGiServiceImpl implements OSGiService {
 		}
 	}
 
-	private static File findJar(File dir, String name, String version) {
-		File[] jars = dir == null ? null : dir.listFiles((d, n) -> n.endsWith(".jar"));
+	/**
+	 * the bundle jars of an additional bundle location: the jars in a directory, or the jar itself when the location is a jar file (this.javasettings.bundles accepts both)
+	 */
+	static File[] jars(File location) {
+		if (location == null) return null;
+		if (location.isFile()) return location.getName().endsWith(".jar") ? new File[] { location } : null;
+		return location.listFiles((d, n) -> n.endsWith(".jar"));
+	}
+
+	static File findJar(File dir, String name, String version) {
+		File[] jars = jars(dir);
 		if (jars == null) return null;
 		File best = null;
 		org.osgi.framework.Version bestVersion = null;
@@ -329,7 +338,7 @@ public final class OSGiServiceImpl implements OSGiService {
 	}
 
 	private static JarVersion findJarVersion(File dir, String name, VersionRange range) {
-		File[] jars = dir == null ? null : dir.listFiles((d, n) -> n.endsWith(".jar"));
+		File[] jars = jars(dir);
 		if (jars == null) return null;
 		File best = null;
 		org.osgi.framework.Version bestVersion = null;
@@ -600,7 +609,7 @@ public final class OSGiServiceImpl implements OSGiService {
 
 	/** a bundle in the directory that exports the package in a version inside the range */
 	private static File findExporting(File dir, String pkg, VersionRange range) {
-		File[] jars = dir == null ? null : dir.listFiles((d, n) -> n.endsWith(".jar"));
+		File[] jars = jars(dir);
 		if (jars == null) return null;
 		for (File jar: jars) {
 			try (JarFile jf = new JarFile(jar)) {
